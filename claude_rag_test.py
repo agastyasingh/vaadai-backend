@@ -252,15 +252,39 @@ def fetch_top_cases_from_ik_web(user_question: str) -> tuple:
         log.warning(f"CASE API SEARCH failed: {e}")
         return [], search_url
 
-    # Step D: Return top 2 as clean dicts
-    cases = []
-    for d in docs[:2]:
+    # Step D: Return top 2 distinct cases (deduplicate by title similarity)
+    def title_similarity(a: str, b: str) -> float:
+        """Simple character-level similarity — no external libs needed."""
+        a, b = a.lower().strip(), b.lower().strip()
+        if a == b:
+            return 1.0
+        # Count matching chars via longest common subsequence approximation:
+        # use set of bigrams for speed (good enough for 97-98% threshold)
+        def bigrams(s):
+            return set(s[i:i+2] for i in range(len(s) - 1))
+        bg_a, bg_b = bigrams(a), bigrams(b)
+        if not bg_a or not bg_b:
+            return 0.0
+        return 2 * len(bg_a & bg_b) / (len(bg_a) + len(bg_b))
+
+    cases    = []
+    for d in docs:                          # iterate ALL returned docs, not just [:2]
         tid   = d.get("tid")
         title = d.get("title", "Unknown")
         src   = d.get("docsource", "")
         url   = f"https://indiankanoon.org/doc/{tid}/"
+
+        # Check this candidate isn't too similar to any already-picked case
+        is_duplicate = any(title_similarity(title, c["title"]) >= 0.97 for c in cases)
+        if is_duplicate:
+            log.debug(f"  SKIPPED (duplicate) | {title!r}")
+            continue
+
         cases.append({"title": title, "source": src, "url": url})
         log.debug(f"  CASE | {title!r}  {src}  {url}")
+
+        if len(cases) == 2:
+            break
 
     log.info(f"CASES SELECTED | {[c['title'] for c in cases]}")
     return cases, search_url
