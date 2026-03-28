@@ -6,7 +6,7 @@ sys.path.insert(0, '/home/agastyasingh927/mysite')
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from vaad_ai_ik_rag import rag_query
+from claude_rag_test import rag_query
 
 app = Flask(__name__)
 CORS(app)  # allows your Hostinger frontend to call this API
