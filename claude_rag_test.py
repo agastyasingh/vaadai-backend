@@ -53,6 +53,336 @@ You are a legal search specialist for Indian law.
 Given a user's legal question, output a JSON object (and NOTHING else) with:
 
 {
+"""
+VaadAI – Indian Kanoon RAG Pipeline
+Flow: User Query → Claude (generates search query) → Indian Kanoon API
+      → Claude (synthesises answer) → User-friendly response
+
+User sees  : plain-language answer only
+Logged to  : vaad_ai.log — search plan, citations, doc metadata, timing
+"""
+
+import os
+import json
+import logging
+import time
+import requests
+from datetime import datetime
+from dotenv import load_dotenv
+import anthropic
+
+load_dotenv()
+
+# ── Logger (all technical details go here, not to stdout) ─────────────────────
+LOG_FILE = "vaad_ai.log"
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.DEBUG,
+    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("vaadai")
+
+def log_section(title: str):
+    log.debug("─" * 60)
+    log.debug(f"  {title}")
+    log.debug("─" * 60)
+
+
+# ── Clients ────────────────────────────────────────────────────────────────────
+claude   = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+IK_TOKEN = os.getenv("INDIAN_KANOON_API_KEY")
+if not IK_TOKEN:
+    raise EnvironmentError("INDIAN_KANOON_API_KEY is missing from your .env file")
+
+IK_BASE    = "https://api.indiankanoon.org"
+IK_HEADERS = {
+    "Authorization": f"Token {IK_TOKEN}",
+    "Accept": "application/json",
+}
+
+
+# ── Step 1: Claude → optimised IK search query ────────────────────────────────
+SEARCH_PLANNER_PROMPT = """
+You are a legal search specialist for Indian law.
+Given a user's legal question, output a JSON object (and NOTHING else) with:
+
+{
+"""
+VaadAI – Indian Kanoon RAG Pipeline
+Flow: User Query → Claude (generates search query) → Indian Kanoon API
+      → Claude (synthesises answer) → User-friendly response
+
+User sees  : plain-language answer only
+Logged to  : vaad_ai.log — search plan, citations, doc metadata, timing
+"""
+
+import os
+import json
+import logging
+import time
+import requests
+from datetime import datetime
+from dotenv import load_dotenv
+import anthropic
+
+load_dotenv()
+
+# ── Logger (all technical details go here, not to stdout) ─────────────────────
+LOG_FILE = "vaad_ai.log"
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.DEBUG,
+    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("vaadai")
+
+def log_section(title: str):
+    log.debug("─" * 60)
+    log.debug(f"  {title}")
+    log.debug("─" * 60)
+
+
+# ── Clients ────────────────────────────────────────────────────────────────────
+claude   = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+IK_TOKEN = os.getenv("INDIAN_KANOON_API_KEY")
+if not IK_TOKEN:
+    raise EnvironmentError("INDIAN_KANOON_API_KEY is missing from your .env file")
+
+IK_BASE    = "https://api.indiankanoon.org"
+IK_HEADERS = {
+    "Authorization": f"Token {IK_TOKEN}",
+    "Accept": "application/json",
+}
+
+
+# ── Step 1: Claude → optimised IK search query ────────────────────────────────
+SEARCH_PLANNER_PROMPT = """
+You are a legal search specialist for Indian law.
+Given a user's legal question, output a JSON object (and NOTHING else) with:
+
+{
+"""
+VaadAI – Indian Kanoon RAG Pipeline
+Flow: User Query → Claude (generates search query) → Indian Kanoon API
+      → Claude (synthesises answer) → User-friendly response
+
+User sees  : plain-language answer only
+Logged to  : vaad_ai.log — search plan, citations, doc metadata, timing
+"""
+
+import os
+import json
+import logging
+import time
+import requests
+from datetime import datetime
+from dotenv import load_dotenv
+import anthropic
+
+load_dotenv()
+
+# ── Logger (all technical details go here, not to stdout) ─────────────────────
+LOG_FILE = "vaad_ai.log"
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.DEBUG,
+    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("vaadai")
+
+def log_section(title: str):
+    log.debug("─" * 60)
+    log.debug(f"  {title}")
+    log.debug("─" * 60)
+
+
+# ── Clients ────────────────────────────────────────────────────────────────────
+claude   = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+IK_TOKEN = os.getenv("INDIAN_KANOON_API_KEY")
+if not IK_TOKEN:
+    raise EnvironmentError("INDIAN_KANOON_API_KEY is missing from your .env file")
+
+IK_BASE    = "https://api.indiankanoon.org"
+IK_HEADERS = {
+    "Authorization": f"Token {IK_TOKEN}",
+    "Accept": "application/json",
+}
+
+
+# ── Step 1: Claude → optimised IK search query ────────────────────────────────
+SEARCH_PLANNER_PROMPT = """
+You are a legal search specialist for Indian law.
+Given a user's legal question, output a JSON object (and NOTHING else) with:
+
+{
+"""
+VaadAI – Indian Kanoon RAG Pipeline
+Flow: User Query → Claude (generates search query) → Indian Kanoon API
+      → Claude (synthesises answer) → User-friendly response
+
+User sees  : plain-language answer only
+Logged to  : vaad_ai.log — search plan, citations, doc metadata, timing
+"""
+
+import os
+import json
+import logging
+import time
+import requests
+from datetime import datetime
+from dotenv import load_dotenv
+import anthropic
+
+load_dotenv()
+
+# ── Logger (all technical details go here, not to stdout) ─────────────────────
+LOG_FILE = "vaad_ai.log"
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.DEBUG,
+    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("vaadai")
+
+def log_section(title: str):
+    log.debug("─" * 60)
+    log.debug(f"  {title}")
+    log.debug("─" * 60)
+
+
+# ── Clients ────────────────────────────────────────────────────────────────────
+claude   = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+IK_TOKEN = os.getenv("INDIAN_KANOON_API_KEY")
+if not IK_TOKEN:
+    raise EnvironmentError("INDIAN_KANOON_API_KEY is missing from your .env file")
+
+IK_BASE    = "https://api.indiankanoon.org"
+IK_HEADERS = {
+    "Authorization": f"Token {IK_TOKEN}",
+    "Accept": "application/json",
+}
+
+
+# ── Step 1: Claude → optimised IK search query ────────────────────────────────
+SEARCH_PLANNER_PROMPT = """
+You are a legal search specialist for Indian law.
+Given a user's legal question, output a JSON object (and NOTHING else) with:
+
+{
+"""
+VaadAI – Indian Kanoon RAG Pipeline
+Flow: User Query → Claude (generates search query) → Indian Kanoon API
+      → Claude (synthesises answer) → User-friendly response
+
+User sees  : plain-language answer only
+Logged to  : vaad_ai.log — search plan, citations, doc metadata, timing
+"""
+
+import os
+import json
+import logging
+import time
+import requests
+from datetime import datetime
+from dotenv import load_dotenv
+import anthropic
+
+load_dotenv()
+
+# ── Logger (all technical details go here, not to stdout) ─────────────────────
+LOG_FILE = "vaad_ai.log"
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.DEBUG,
+    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("vaadai")
+
+def log_section(title: str):
+    log.debug("─" * 60)
+    log.debug(f"  {title}")
+    log.debug("─" * 60)
+
+
+# ── Clients ────────────────────────────────────────────────────────────────────
+claude   = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+IK_TOKEN = os.getenv("INDIAN_KANOON_API_KEY")
+if not IK_TOKEN:
+    raise EnvironmentError("INDIAN_KANOON_API_KEY is missing from your .env file")
+
+IK_BASE    = "https://api.indiankanoon.org"
+IK_HEADERS = {
+    "Authorization": f"Token {IK_TOKEN}",
+    "Accept": "application/json",
+}
+
+
+# ── Step 1: Claude → optimised IK search query ────────────────────────────────
+SEARCH_PLANNER_PROMPT = """
+You are a legal search specialist for Indian law.
+Given a user's legal question, output a JSON object (and NOTHING else) with:
+
+{
+"""
+VaadAI – Indian Kanoon RAG Pipeline
+Flow: User Query → Claude (generates search query) → Indian Kanoon API
+      → Claude (synthesises answer) → User-friendly response
+
+User sees  : plain-language answer only
+Logged to  : vaad_ai.log — search plan, citations, doc metadata, timing
+"""
+
+import os
+import json
+import logging
+import time
+import requests
+from datetime import datetime
+from dotenv import load_dotenv
+import anthropic
+
+load_dotenv()
+
+# ── Logger (all technical details go here, not to stdout) ─────────────────────
+LOG_FILE = "vaad_ai.log"
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.DEBUG,
+    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("vaadai")
+
+def log_section(title: str):
+    log.debug("─" * 60)
+    log.debug(f"  {title}")
+    log.debug("─" * 60)
+
+
+# ── Clients ────────────────────────────────────────────────────────────────────
+claude   = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+IK_TOKEN = os.getenv("INDIAN_KANOON_API_KEY")
+if not IK_TOKEN:
+    raise EnvironmentError("INDIAN_KANOON_API_KEY is missing from your .env file")
+
+IK_BASE    = "https://api.indiankanoon.org"
+IK_HEADERS = {
+    "Authorization": f"Token {IK_TOKEN}",
+    "Accept": "application/json",
+}
+
+
+# ── Step 1: Claude → optimised IK search query ────────────────────────────────
+SEARCH_PLANNER_PROMPT = """
+You are a legal search specialist for Indian law.
+Given a user's legal question, output a JSON object (and NOTHING else) with:
+
+{
   "formInput": "<concise Indian Kanoon search query>",
   "doctypes":  "<one of: supremecourt | highcourts | judgments | laws | tribunals | (blank for all)>",
   "reasoning": "<one sentence on why you chose this query>"
@@ -300,6 +630,75 @@ def fetch_top_cases_from_ik_web(user_question: str) -> tuple:
     return cases, search_url
 
 
+# ── Query classifier ──────────────────────────────────────────────────────────
+CLASSIFIER_PROMPT = """
+You are a query classifier for an Indian legal assistant chatbot.
+
+Classify the user message into one of exactly three categories:
+
+1. LEGAL       — a genuine question about Indian law, rights, court procedures,
+                 acts, sections, or legal situations requiring case research.
+                 Follow-up questions that dig deeper into a legal topic also count.
+                 Examples: "Can FIR be quashed?", "What about matrimonial cases?",
+                 "How long does this process take?", "What if I don't pay maintenance?"
+
+2. CONVERSATIONAL — a greeting, thank-you, off-topic remark, or vague statement
+                 that does NOT require searching Indian Kanoon.
+                 Examples: "thanks", "ok", "who are you?", "what can you do?",
+                 "reach a lawyer now", "how do I contact someone?"
+
+3. OUTOFSCOPE  — a non-Indian or non-legal question entirely outside the domain.
+                 Examples: "recipe for dal", "who won IPL?", "write me a poem"
+
+Output ONLY the single word: LEGAL, CONVERSATIONAL, or OUTOFSCOPE.
+No explanation, no punctuation.
+"""
+
+def classify_query(user_question: str, history: list = None) -> str:
+    """Returns 'LEGAL', 'CONVERSATIONAL', or 'OUTOFSCOPE'."""
+    # Include last 2 history turns so classifier understands follow-up context
+    messages = []
+    for turn in (history or [])[-4:]:
+        messages.append({"role": turn["role"], "content": turn["content"]})
+    messages.append({"role": "user", "content": user_question})
+
+    resp = claude.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=8,
+        system=CLASSIFIER_PROMPT,
+        messages=messages,
+    )
+    result = resp.content[0].text.strip().upper()
+    log.info(f"CLASSIFIER | {result!r} for {user_question!r}")
+    return result if result in ("LEGAL", "CONVERSATIONAL", "OUTOFSCOPE") else "LEGAL"
+
+
+CONVERSATIONAL_SYSTEM = """
+You are VaadAI, a friendly Indian legal information assistant.
+The user has sent a non-legal or conversational message.
+Respond warmly and briefly (2-3 sentences max).
+If they seem to want to reach a lawyer, suggest they search for a local advocate
+or contact their state bar association — but do NOT search for cases.
+Never pretend to be a general-purpose assistant.
+End with: "Feel free to ask me any Indian legal question!"
+"""
+
+def handle_conversational(user_question: str, history: list = None) -> str:
+    """Handle greetings, thanks, vague requests without hitting IK at all."""
+    messages = []
+    for turn in (history or [])[-4:]:
+        messages.append({"role": turn["role"], "content": turn["content"]})
+    messages.append({"role": "user", "content": user_question})
+
+    resp = claude.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=150,
+        system=CONVERSATIONAL_SYSTEM,
+        messages=messages,
+    )
+    return resp.content[0].text.strip()
+
+
 # ── Orchestrator ──────────────────────────────────────────────────────────────
 def rag_query(user_question: str, history: list = None) -> str:
     """
@@ -310,12 +709,24 @@ def rag_query(user_question: str, history: list = None) -> str:
     run_id = datetime.now().strftime("%H%M%S")
     log_section(f"RUN {run_id} | {user_question}")
 
+    # 0. Classify query — skip IK entirely for non-legal messages
+    query_type = classify_query(user_question, history)
+
+    if query_type == "OUTOFSCOPE":
+        log.info("OUTOFSCOPE — skipping IK search")
+        return "I am VaadAI, an Indian legal information assistant. I can only help with questions about Indian law, court procedures, and legal rights.\n\nFeel free to ask me any Indian legal question!"
+
+    if query_type == "CONVERSATIONAL":
+        log.info("CONVERSATIONAL — skipping IK search")
+        return handle_conversational(user_question, history)
+
+    # LEGAL path — full pipeline
     # 1. Plan search
     search_plan = plan_search(user_question)
     form_input  = search_plan["formInput"]
     doctypes    = search_plan.get("doctypes", "")
 
-    # 2a. Search Indian Kanoon for RAG context (broader query)
+    # 2. Search Indian Kanoon for RAG context
     docs = search_indian_kanoon(form_input, doctypes, max_results=10)
     if not docs:
         log.warning("No documents returned from IK search.")
@@ -324,8 +735,6 @@ def rag_query(user_question: str, history: list = None) -> str:
             "Please try rephrasing, or consult a local lawyer directly.\n\n"
             "⚠️ This is legal information, not legal advice. For your specific situation, please consult a lawyer."
         )
-
-
 
     # 3. Build context
     context, citations = build_context(docs, form_input)
@@ -338,7 +747,7 @@ def rag_query(user_question: str, history: list = None) -> str:
     # 4. Synthesise answer
     answer = synthesise_answer(user_question, context, history=history)
 
-    # 5. Fetch top 2 relevant cases from IK public search HTML
+    # 5. Fetch top 2 relevant cases via IK API
     relevant_cases, ik_search_url = fetch_top_cases_from_ik_web(user_question)
 
     if relevant_cases:
@@ -369,7 +778,6 @@ if __name__ == "__main__":
         print("\n" + "─" * 60)
 
     print("\n✅ Done. Check vaad_ai.log for full technical details.")
-
 
 
 
