@@ -189,19 +189,29 @@ End with exactly this line:
 ⚠️ This is legal information, not legal advice. Please consult a lawyer for your situation.
 """
 
-def synthesise_answer(user_question: str, context: str) -> str:
-    """Ask Claude to produce a plain-language answer."""
-    t0   = time.time()
+def synthesise_answer(user_question: str, context: str, history: list = None) -> str:
+    """
+    Ask Claude to produce a plain-language answer.
+    history: list of {"role": "user"|"assistant", "content": str} for follow-up awareness.
+    """
+    t0 = time.time()
+
+    # Build messages: prior turns first, then current question with fresh IK context
+    messages = []
+    for turn in (history or []):
+        messages.append({"role": turn["role"], "content": turn["content"]})
+
+    # Always append the current question with its retrieved context
+    messages.append({
+        "role": "user",
+        "content": f"USER QUESTION:\n{user_question}\n\nINDIAN KANOON CONTEXT:\n{context}",
+    })
+
     resp = claude.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=400,
         system=ANSWER_SYNTHESISER_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": f"USER QUESTION:\n{user_question}\n\nINDIAN KANOON CONTEXT:\n{context}",
-            }
-        ],
+        messages=messages,
     )
     elapsed = time.time() - t0
     answer  = resp.content[0].text.strip()
@@ -291,9 +301,10 @@ def fetch_top_cases_from_ik_web(user_question: str) -> tuple:
 
 
 # ── Orchestrator ──────────────────────────────────────────────────────────────
-def rag_query(user_question: str) -> str:
+def rag_query(user_question: str, history: list = None) -> str:
     """
     Full pipeline → returns only the plain-language answer string.
+    history: list of {"role": "user"|"assistant", "content": str} from the frontend.
     All technical details (search plan, citations, timing) go to vaad_ai.log.
     """
     run_id = datetime.now().strftime("%H%M%S")
@@ -325,7 +336,7 @@ def rag_query(user_question: str) -> str:
     log.info(f"CONTEXT BUILT | docs_used={len(citations)}  total_chars={len(context)}")
 
     # 4. Synthesise answer
-    answer = synthesise_answer(user_question, context)
+    answer = synthesise_answer(user_question, context, history=history)
 
     # 5. Fetch top 2 relevant cases from IK public search HTML
     relevant_cases, ik_search_url = fetch_top_cases_from_ik_web(user_question)
@@ -358,6 +369,16 @@ if __name__ == "__main__":
         print("\n" + "─" * 60)
 
     print("\n✅ Done. Check vaad_ai.log for full technical details.")
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -585,68 +606,85 @@ if __name__ == "__main__":
 #     return answer
 
 
-# # ── Step 4b: Fetch top 2 relevant cases from IK public search HTML ───────────
-# def fetch_top_cases_from_ik_web(user_question: str) -> list:
+# # ── Step 4b: Fetch top 2 relevant cases via IK API (authenticated, never blocked) ──
+# def fetch_top_cases_from_ik_web(user_question: str) -> tuple:
 #     """
-#     1. Ask Claude for the tightest keyword phrase for the legal issue.
-#     2. GET https://indiankanoon.org/search/?formInput=<keywords>+sortby%3Amostrecent
-#     3. Parse the returned HTML — results live in <article class="result"> tags.
-#     4. Return top 2 as {title, source, url}.
+#     Use the authenticated IK API to search for the most relevant recent cases.
+#     Falls back gracefully to an empty list — never crashes the pipeline.
+#     Returns (cases, search_url) where search_url is the equivalent public URL
+#     users can open in a browser to see more cases.
 #     """
-#     import re
-#     import html as html_lib
 #     from urllib.parse import quote_plus
 
-#     # Step A: Claude distils the tightest keyword phrase
+#     # Step A: Claude extracts tight keywords
 #     kw_resp = claude.messages.create(
 #         model="claude-sonnet-4-20250514",
 #         max_tokens=32,
 #         system=(
-#             "Extract a 3-6 word keyword phrase that best describes the SPECIFIC legal "
-#             "issue in the user question (e.g. 'FIR quash Section 482 CrPC', "
-#             "'eviction non-payment rent Maharashtra', 'maintenance Section 125 CrPC'). "
-#             "Output ONLY the phrase — no punctuation, no explanation."
+#             "Extract a 3-6 word keyword phrase describing the SPECIFIC legal issue "
+#             "(e.g. 'FIR quash Section 482 CrPC', 'eviction non-payment rent', "
+#             "'maintenance Section 125 CrPC'). Output ONLY the phrase, nothing else."
 #         ),
 #         messages=[{"role": "user", "content": user_question}],
 #     )
-#     keywords = kw_resp.content[0].text.strip()
-#     log.info(f"IK WEB KEYWORDS | {keywords!r}")
+#     keywords  = kw_resp.content[0].text.strip()
+#     log.info(f"CASE KEYWORDS | {keywords!r}")
 
-#     # Step B: Build the exact public search URL with sortby:mostrecent
-#     query_str  = keywords + " sortby:mostrecent"
-#     search_url = "https://indiankanoon.org/search/?formInput=" + quote_plus(query_str)
-#     log.info(f"IK WEB SEARCH URL | {search_url}")
+#     # Step B: Build public browse URL (for display only — not fetched)
+#     search_url = "https://indiankanoon.org/search/?formInput=" + quote_plus(keywords + " sortby:mostrecent")
 
-#     # Step C: GET the public HTML page (no auth required)
+#     # Step C: Use authenticated API with sortby:mostrecent + doctypes:judgments
+#     query = keywords + " sortby:mostrecent doctypes:judgments"
 #     try:
-#         resp = requests.get(
-#             search_url,
-#             headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"},
-#             timeout=15,
+#         resp = requests.post(
+#             f"{IK_BASE}/search/",
+#             headers=IK_HEADERS,
+#             data={"formInput": query, "pagenum": 0},
+#             timeout=20,
 #         )
 #         resp.raise_for_status()
-#         html = resp.text
+#         docs = resp.json().get("docs", [])
+#         log.info(f"CASE API SEARCH | query={query!r}  found={len(docs)}")
 #     except Exception as e:
-#         log.warning(f"IK WEB FETCH failed: {e}")
-#         return []
+#         log.warning(f"CASE API SEARCH failed: {e}")
+#         return [], search_url
 
-#     # Step D: Parse <article class="result"> blocks
-#     # Title + fragment doc id come from the docfragment link inside result_title
-#     titles  = re.findall(r'<a\s+href="/docfragment/(\d+)/[^"]*"[^>]*>\s*([^<]+?)\s*</a>', html)
-#     courts  = re.findall(r'<span\s+class="docsource">\s*([^<]+?)\s*</span>', html)
+#     # Step D: Return top 2 distinct cases (deduplicate by title similarity)
+#     def title_similarity(a: str, b: str) -> float:
+#         """Simple character-level similarity — no external libs needed."""
+#         a, b = a.lower().strip(), b.lower().strip()
+#         if a == b:
+#             return 1.0
+#         # Count matching chars via longest common subsequence approximation:
+#         # use set of bigrams for speed (good enough for 97-98% threshold)
+#         def bigrams(s):
+#             return set(s[i:i+2] for i in range(len(s) - 1))
+#         bg_a, bg_b = bigrams(a), bigrams(b)
+#         if not bg_a or not bg_b:
+#             return 0.0
+#         return 2 * len(bg_a & bg_b) / (len(bg_a) + len(bg_b))
 
-#     cases = []
-#     for idx, (doc_id, raw_title) in enumerate(titles):
-#         title  = html_lib.unescape(raw_title).strip()
-#         source = courts[idx].strip() if idx < len(courts) else ""
-#         url    = f"https://indiankanoon.org/doc/{doc_id}/"
-#         log.debug(f"  WEB RESULT {idx+1} | {title!r}  {source}")
-#         cases.append({"title": title, "source": source, "url": url})
+#     cases    = []
+#     for d in docs:                          # iterate ALL returned docs, not just [:2]
+#         tid   = d.get("tid")
+#         title = d.get("title", "Unknown")
+#         src   = d.get("docsource", "")
+#         url   = f"https://indiankanoon.org/doc/{tid}/"
+
+#         # Check this candidate isn't too similar to any already-picked case
+#         is_duplicate = any(title_similarity(title, c["title"]) >= 0.97 for c in cases)
+#         if is_duplicate:
+#             log.debug(f"  SKIPPED (duplicate) | {title!r}")
+#             continue
+
+#         cases.append({"title": title, "source": src, "url": url})
+#         log.debug(f"  CASE | {title!r}  {src}  {url}")
+
 #         if len(cases) == 2:
 #             break
 
-#     log.info(f"IK WEB CASES PARSED | {[c['title'] for c in cases]}")
-#     return cases
+#     log.info(f"CASES SELECTED | {[c['title'] for c in cases]}")
+#     return cases, search_url
 
 
 # # ── Orchestrator ──────────────────────────────────────────────────────────────
@@ -687,12 +725,13 @@ if __name__ == "__main__":
 #     answer = synthesise_answer(user_question, context)
 
 #     # 5. Fetch top 2 relevant cases from IK public search HTML
-#     relevant_cases = fetch_top_cases_from_ik_web(user_question)
+#     relevant_cases, ik_search_url = fetch_top_cases_from_ik_web(user_question)
 
 #     if relevant_cases:
 #         cases_block = "\n\n📌 Recent related cases:"
 #         for c in relevant_cases:
 #             cases_block += f"\n  • {c['title']} — {c['source']}\n    {c['url']}"
+#         cases_block += f"\n\n🔗 Verified via: {ik_search_url}"
 #         answer += cases_block
 
 #     log.info(f"RUN {run_id} COMPLETE")
@@ -716,3 +755,4 @@ if __name__ == "__main__":
 #         print("\n" + "─" * 60)
 
 #     print("\n✅ Done. Check vaad_ai.log for full technical details.")
+
