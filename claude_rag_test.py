@@ -3,7 +3,7 @@ VaadAI - Indian Kanoon RAG Pipeline
 Flow: User Query -> Claude (generates search query) -> Indian Kanoon API
       -> Claude (synthesises answer) -> User-friendly response
 
-User sees  : plain-language answer only
+User sees  : plain-language answer + optional follow-up question chips
 Logged to  : vaad_ai.log - search plan, citations, doc metadata, timing
 """
 
@@ -225,36 +225,25 @@ ANSWER_SYNTHESISER_PROMPT = """You are VaadAI, a legal information assistant for
 
 You will receive a user's legal question and verified excerpts from Indian court judgments and statutes.
 
-OUTPUT FORMAT - return a JSON object with exactly two keys:
-
-{
-  "answer": "<your full answer here>",
-  "suggestions": ["<question 1>", "<question 2>", "<question 3>"]
-}
-
-ANSWER RULES:
-- 6-10 lines maximum.
+LENGTH RULES (strict):
+- Your entire answer must be 6-10 lines maximum. No exceptions.
 - One direct opening sentence answering the question.
-- Then 3-5 bullet points (one line each).
-- End with exactly: Warning: This is legal information, not legal advice. Please consult a lawyer for your situation.
-- Plain simple language. Zero jargon.
-- Mention section/act names but NEVER case names, citation numbers, doc IDs, or URLs.
-- If the law was renamed (CrPC -> BNSS), note it in brackets.
+- Then 3-5 bullet points covering the key points. Each bullet: one line only.
+- Then the disclaimer line. That is it.
 
-SUGGESTIONS RULES:
-- Exactly 3 short follow-up questions (max 10 words each).
-- Each must be directly answerable from Indian law.
-- Must be specific to the topic just discussed - no generic questions.
-- Progress naturally: one clarification, one deeper dive, one practical next step.
+CONTENT RULES:
+- Plain, simple language - as if texting a friend. Zero jargon.
+- If the answer comes directly from a specific law, mention only its short name and section number.
+- If the law has been renamed (e.g. CrPC -> BNSS), add it in brackets: "Section 482 CrPC (now Section 528 BNSS)".
+- NEVER include case names, citation numbers, document IDs, or URLs.
+- If context is insufficient, say so in one line and name the type of lawyer to consult.
 
-Output ONLY valid JSON - no markdown fences, no text before or after."""
+End with exactly this line:
+Warning: This is legal information, not legal advice. Please consult a lawyer for your situation."""
 
 
-def synthesise_answer(user_question: str, context: str, history: list = None) -> tuple:
-    """
-    Ask Claude to produce answer + suggestions in a single call.
-    Returns (answer_str, suggestions_list).
-    """
+def synthesise_answer(user_question: str, context: str, history: list = None) -> str:
+    """Ask Claude for a plain-language answer (no JSON)."""
     t0       = time.time()
     messages = []
     for turn in (history or []):
@@ -266,30 +255,80 @@ def synthesise_answer(user_question: str, context: str, history: list = None) ->
 
     resp = claude.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=600,
+        max_tokens=400,
         system=ANSWER_SYNTHESISER_PROMPT,
         messages=messages,
     )
-    elapsed  = time.time() - t0
-    raw      = resp.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+    elapsed = time.time() - t0
+    answer  = resp.content[0].text.strip()
     log.info("SYNTHESIS | tokens_in=" + str(resp.usage.input_tokens) + "  tokens_out=" + str(resp.usage.output_tokens) + "  time=" + str(round(elapsed, 2)) + "s")
+    return answer
+
+
+# -- Step 4a: Follow-up recommendations (separate call — reliable JSON, faster than bloating synthesis) --
+FOLLOW_UP_SYSTEM = """You generate follow-up questions for VaadAI, an Indian legal information chatbot.
+
+You receive: the user's question, the assistant's answer (plain text), and optional excerpts from Indian Kanoon.
+
+Output exactly 3 follow-up questions the USER might tap next.
+
+Rules:
+- Each question must be about Indian law / procedure only, and must be something this assistant can answer
+  using statutes and reported cases (not fact-specific legal advice for a real person's undisclosed case).
+- Keep each question under 12 words. Natural, conversational Hindi-English mix is OK if the user did that.
+- Tie questions to the topic just explained; prefer narrower, quicker-to-answer questions over huge new topics.
+- One clarification-style, one deeper rule/procedure, one practical "what happens if / what are penalties" style — when it fits.
+- Do not repeat the original question verbatim.
+
+Output ONLY a JSON array of 3 strings, e.g. ["...","...","..."]
+No markdown fences, no other keys, no numbering outside the JSON."""
+
+
+def generate_follow_up_questions(
+    user_question: str,
+    answer_text: str,
+    context: str = "",
+    history: list = None,
+) -> list:
+    """
+    Second Claude call: short, focused follow-ups grounded in Q + A + optional RAG context.
+    """
+    ctx = (context or "")[:4500]
+    block = (
+        "ORIGINAL USER QUESTION:\n" + user_question.strip()
+        + "\n\nASSISTANT ANSWER:\n" + answer_text.strip()
+        + ("\n\nINDIAN KANOON EXCERPTS (for grounding):\n" + ctx if ctx.strip() else "")
+    )
+    messages = []
+    for turn in (history or [])[-4:]:
+        messages.append({"role": turn["role"], "content": turn["content"]})
+    messages.append({"role": "user", "content": block})
+
+    t0 = time.time()
+    resp = claude.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=220,
+        system=FOLLOW_UP_SYSTEM,
+        messages=messages,
+    )
+    elapsed = time.time() - t0
+    raw = resp.content[0].text.strip()
+    raw = raw.replace("```json", "").replace("```", "").strip()
+    log.info(
+        "FOLLOW-UPS | tokens_out=" + str(resp.usage.output_tokens) + "  time=" + str(round(elapsed, 2)) + "s"
+    )
 
     try:
-        parsed      = json.loads(raw)
-        answer      = parsed.get("answer", raw).strip()
-        suggestions = parsed.get("suggestions", [])
-        if isinstance(suggestions, list):
-            suggestions = [s for s in suggestions if isinstance(s, str) and len(s) > 5][:3]
-        else:
-            suggestions = []
-    except Exception:
-        # If JSON parse fails, treat entire response as answer with no suggestions
-        log.warning("SYNTHESIS JSON parse failed, using raw text")
-        answer      = raw
-        suggestions = []
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list):
+            raise ValueError("not a list")
+        out = [s.strip() for s in parsed if isinstance(s, str) and len(s.strip()) > 3][:3]
+    except Exception as e:
+        log.warning("FOLLOW-UPS JSON parse failed: " + str(e) + " | raw=" + repr(raw[:200]))
+        return []
 
-    log.info("SUGGESTIONS | " + str(suggestions))
-    return answer, suggestions
+    log.info("SUGGESTIONS | " + str(out))
+    return out
 
 
 # -- Step 4b: Fetch top 2 relevant cases via IK API ---------------------------
@@ -404,8 +443,9 @@ def rag_query(user_question: str, history: list = None) -> dict:
         context = "No usable context could be retrieved."
     log.info("CONTEXT BUILT | docs_used=" + str(len(citations)) + "  total_chars=" + str(len(context)))
 
-    # 4. Synthesise answer + suggestions in one Claude call
-    answer, suggestions = synthesise_answer(user_question, context, history=history)
+    # 4. Synthesise answer (plain text), then follow-ups from Q + A + context (separate call)
+    answer = synthesise_answer(user_question, context, history=history)
+    suggestions = generate_follow_up_questions(user_question, answer, context, history=history)
 
     # 5. Fetch top 2 relevant cases
     relevant_cases, ik_search_url = fetch_top_cases(user_question)
