@@ -34,12 +34,15 @@ def _parse_ask_body():
 
 
 def _rag_json_response(result: dict):
-    """Single shape for /ask and /recommendations: suggestions + recommendations alias."""
+    """Single shape for /ask: suggestions, recommendations, citations, disclaimer."""
     sug = result.get("suggestions", [])
     payload = {
         "answer": result.get("answer", ""),
         "suggestions": sug,
         "recommendations": sug,
+        "citations": result.get("citations") or [],
+        "disclaimer": result.get("disclaimer"),
+        "more_cases_url": result.get("more_cases_url"),
     }
     return jsonify(payload)
 
@@ -106,6 +109,9 @@ def recommendations():
             "recommendations": result.get("suggestions", []),
             "suggestions": result.get("suggestions", []),
             "answer": result.get("answer", ""),
+            "citations": result.get("citations") or [],
+            "disclaimer": result.get("disclaimer"),
+            "more_cases_url": result.get("more_cases_url"),
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
