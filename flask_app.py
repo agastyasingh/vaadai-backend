@@ -18,13 +18,11 @@ def index():
 def ask():
     data     = request.get_json(silent=True) or {}
     question = data.get("question", "").strip()
-    # history: list of {role, content} pairs from the frontend
     history  = data.get("history", [])
 
     if not question:
         return jsonify({"error": "No question provided"}), 400
 
-    # Validate history shape — drop anything malformed
     clean_history = [
         {"role": t["role"], "content": t["content"]}
         for t in history
@@ -34,8 +32,12 @@ def ask():
     ]
 
     try:
-        answer = rag_query(question, history=clean_history)
-        return jsonify({"answer": answer})
+        result = rag_query(question, history=clean_history)
+        # result is now {"answer": str, "suggestions": list}
+        return jsonify({
+            "answer":      result.get("answer", ""),
+            "suggestions": result.get("suggestions", [])
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
