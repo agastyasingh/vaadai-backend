@@ -1,3 +1,3 @@
 timeout = 130
-workers = 1
-threads = 4
+workers = 2
+threads = 3
