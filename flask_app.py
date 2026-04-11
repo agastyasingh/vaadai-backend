@@ -1,11 +1,11 @@
 import sys
 import os
 
-sys.path.insert(0, '/home/agastyasingh927/mysite')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from claude_rag_test import rag_query
+from claude_rag_test import rag_query, generate_follow_up_questions
 
 app = Flask(__name__)
 CORS(app)
@@ -58,17 +58,47 @@ def ask():
         return jsonify({"error": str(e)}), 500
 
 
+def _parse_history_only():
+    data = request.get_json(silent=True) or {}
+    history = data.get("history", [])
+    return [
+        {"role": t["role"], "content": t["content"]}
+        for t in history
+        if isinstance(t, dict)
+        and t.get("role") in ("user", "assistant")
+        and isinstance(t.get("content"), str)
+    ]
+
+
 @app.route("/recommendations", methods=["POST"])
 def recommendations():
     """
-    Same pipeline as /ask; use when the UI loads follow-ups in a second request.
-    Returns only recommendations/suggestions (and answer for convenience).
-    Prefer a single /ask call to avoid duplicate RAG work.
+    Fast path: POST JSON with question + answer (and optional context) to generate follow-ups only
+    (one short Claude call). Use this when the UI fetches chips after the main /ask response.
+
+    Fallback: if answer is omitted, runs full rag_query (slow; avoid if possible).
     """
-    try:
-        question, clean_history = _parse_ask_body()
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+    data = request.get_json(silent=True) or {}
+    question = (data.get("question") or "").strip()
+    answer = (data.get("answer") or "").strip()
+    extra_ctx = (data.get("context") or "").strip()
+    clean_history = _parse_history_only()
+
+    if not question:
+        return jsonify({"error": "No question provided"}), 400
+
+    if answer:
+        try:
+            sug = generate_follow_up_questions(
+                question, answer, context=extra_ctx, history=clean_history
+            )
+            return jsonify({
+                "recommendations": sug,
+                "suggestions": sug,
+                "answer": answer,
+            })
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
 
     try:
         result = rag_query(question, history=clean_history)
