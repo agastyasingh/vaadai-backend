@@ -225,25 +225,36 @@ ANSWER_SYNTHESISER_PROMPT = """You are VaadAI, a legal information assistant for
 
 You will receive a user's legal question and verified excerpts from Indian court judgments and statutes.
 
-LENGTH RULES (strict):
-- Your entire answer must be 6-10 lines maximum. No exceptions.
+OUTPUT FORMAT - return a JSON object with exactly two keys:
+
+{
+  "answer": "<your full answer here>",
+  "suggestions": ["<question 1>", "<question 2>", "<question 3>"]
+}
+
+ANSWER RULES:
+- 6-10 lines maximum.
 - One direct opening sentence answering the question.
-- Then 3-5 bullet points covering the key points. Each bullet: one line only.
-- Then the disclaimer line. That is it.
+- Then 3-5 bullet points (one line each).
+- End with exactly: Warning: This is legal information, not legal advice. Please consult a lawyer for your situation.
+- Plain simple language. Zero jargon.
+- Mention section/act names but NEVER case names, citation numbers, doc IDs, or URLs.
+- If the law was renamed (CrPC -> BNSS), note it in brackets.
 
-CONTENT RULES:
-- Plain, simple language - as if texting a friend. Zero jargon.
-- If the answer comes directly from a specific law, mention only its short name and section number.
-- If the law has been renamed (e.g. CrPC -> BNSS), add it in brackets: "Section 482 CrPC (now Section 528 BNSS)".
-- NEVER include case names, citation numbers, document IDs, or URLs.
-- If context is insufficient, say so in one line and name the type of lawyer to consult.
+SUGGESTIONS RULES:
+- Exactly 3 short follow-up questions (max 10 words each).
+- Each must be directly answerable from Indian law.
+- Must be specific to the topic just discussed - no generic questions.
+- Progress naturally: one clarification, one deeper dive, one practical next step.
 
-End with exactly this line:
-Warning: This is legal information, not legal advice. Please consult a lawyer for your situation."""
+Output ONLY valid JSON - no markdown fences, no text before or after."""
 
 
-def synthesise_answer(user_question: str, context: str, history: list = None) -> str:
-    """Ask Claude to produce a plain-language answer, aware of conversation history."""
+def synthesise_answer(user_question: str, context: str, history: list = None) -> tuple:
+    """
+    Ask Claude to produce answer + suggestions in a single call.
+    Returns (answer_str, suggestions_list).
+    """
     t0       = time.time()
     messages = []
     for turn in (history or []):
@@ -255,14 +266,30 @@ def synthesise_answer(user_question: str, context: str, history: list = None) ->
 
     resp = claude.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=400,
+        max_tokens=600,
         system=ANSWER_SYNTHESISER_PROMPT,
         messages=messages,
     )
-    elapsed = time.time() - t0
-    answer  = resp.content[0].text.strip()
+    elapsed  = time.time() - t0
+    raw      = resp.content[0].text.strip().replace("```json", "").replace("```", "").strip()
     log.info("SYNTHESIS | tokens_in=" + str(resp.usage.input_tokens) + "  tokens_out=" + str(resp.usage.output_tokens) + "  time=" + str(round(elapsed, 2)) + "s")
-    return answer
+
+    try:
+        parsed      = json.loads(raw)
+        answer      = parsed.get("answer", raw).strip()
+        suggestions = parsed.get("suggestions", [])
+        if isinstance(suggestions, list):
+            suggestions = [s for s in suggestions if isinstance(s, str) and len(s) > 5][:3]
+        else:
+            suggestions = []
+    except Exception:
+        # If JSON parse fails, treat entire response as answer with no suggestions
+        log.warning("SYNTHESIS JSON parse failed, using raw text")
+        answer      = raw
+        suggestions = []
+
+    log.info("SUGGESTIONS | " + str(suggestions))
+    return answer, suggestions
 
 
 # -- Step 4b: Fetch top 2 relevant cases via IK API ---------------------------
@@ -330,50 +357,6 @@ def fetch_top_cases(user_question: str) -> tuple:
     return cases, search_url
 
 
-# -- Step 5b: Generate follow-up recommendations -----------------------------
-RECOMMENDATIONS_PROMPT = """You are a legal assistant helping users explore Indian law step by step.
-
-You have just answered a legal question. Based on the answer and the conversation so far,
-suggest 3 short follow-up questions the user is most likely to ask next.
-
-Rules:
-- Each question must be directly answerable from Indian law (acts, sections, court procedures).
-- Questions must be SHORT - max 10 words each.
-- Questions must be SPECIFIC to the topic just discussed - no generic questions.
-- They should progress naturally: one clarification, one deeper dive, one practical next step.
-- Output ONLY a valid JSON array of 3 strings. No explanation, no markdown.
-
-Example output:
-["What is the time limit to file this petition?", "Can a Sessions Court also quash an FIR?", "What documents are needed to file the petition?"]"""
-
-
-def generate_recommendations(user_question: str, answer: str, context: str) -> list:
-    """Ask Claude to generate 3 relevant follow-up questions based on the answer."""
-    try:
-        resp = claude.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=150,
-            system=RECOMMENDATIONS_PROMPT,
-            messages=[{
-                "role": "user",
-                "content": (
-                    "QUESTION THAT WAS ASKED:\n" + user_question +
-                    "\n\nANSWER THAT WAS GIVEN:\n" + answer +
-                    "\n\nLEGAL CONTEXT USED:\n" + context[:1000]
-                )
-            }],
-        )
-        raw  = resp.content[0].text.strip().replace("```json", "").replace("```", "").strip()
-        suggestions = json.loads(raw)
-        if isinstance(suggestions, list):
-            suggestions = [s for s in suggestions if isinstance(s, str) and len(s) > 5][:3]
-            log.info("RECOMMENDATIONS | " + str(suggestions))
-            return suggestions
-    except Exception as e:
-        log.warning("RECOMMENDATIONS failed: " + str(e))
-    return []
-
-
 # -- Orchestrator -------------------------------------------------------------
 def rag_query(user_question: str, history: list = None) -> dict:
     """
@@ -421,8 +404,8 @@ def rag_query(user_question: str, history: list = None) -> dict:
         context = "No usable context could be retrieved."
     log.info("CONTEXT BUILT | docs_used=" + str(len(citations)) + "  total_chars=" + str(len(context)))
 
-    # 4. Synthesise answer
-    answer = synthesise_answer(user_question, context, history=history)
+    # 4. Synthesise answer + suggestions in one Claude call
+    answer, suggestions = synthesise_answer(user_question, context, history=history)
 
     # 5. Fetch top 2 relevant cases
     relevant_cases, ik_search_url = fetch_top_cases(user_question)
@@ -432,9 +415,6 @@ def rag_query(user_question: str, history: list = None) -> dict:
             cases_block += "\n  - " + c["title"] + " -- " + c["source"] + "\n    " + c["url"]
         cases_block += "\n\nMore cases: " + ik_search_url
         answer += cases_block
-
-    # 6. Generate follow-up recommendations (runs in parallel with cases already done)
-    suggestions = generate_recommendations(user_question, answer, context)
 
     log.info("RUN " + run_id + " COMPLETE")
     return {"answer": answer, "suggestions": suggestions}
