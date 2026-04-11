@@ -13,6 +13,7 @@ import json
 import logging
 import time
 import requests
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from urllib.parse import quote_plus
 from dotenv import load_dotenv
@@ -47,6 +48,47 @@ IK_HEADERS = {
     "Authorization": "Token " + IK_TOKEN,
     "Accept": "application/json",
 }
+
+DEFAULT_DISCLAIMER = (
+    "Warning: This is legal information, not legal advice. Please consult a lawyer for your situation."
+)
+
+
+def split_answer_and_disclaimer(text: str) -> tuple:
+    """Split synthesis trailing Warning line from body for separate UI."""
+    if "Warning:" in text:
+        idx = text.rfind("Warning:")
+        body = text[:idx].strip()
+        disc = text[idx:].strip()
+        if body:
+            return body, disc
+    return text.strip(), DEFAULT_DISCLAIMER
+
+
+def build_verified_citation_rows(rag_citations: list, related_cases: list) -> list:
+    """
+    Rows for API + frontend 'Verified citations' panel. relevance_pct is a simple rank heuristic.
+    """
+    rows = []
+    for i, c in enumerate(rag_citations[:5]):
+        pct = max(72, min(96, 94 - i * 4))
+        rows.append({
+            "title": c.get("title") or "Source",
+            "subtitle": (c.get("source") or "").strip(),
+            "url": c.get("url") or "",
+            "relevance_pct": pct,
+            "kind": "context",
+        })
+    for i, c in enumerate(related_cases[:2]):
+        pct = max(65, min(88, 84 - i * 6))
+        rows.append({
+            "title": c.get("title") or "Case",
+            "subtitle": (c.get("source") or "").strip(),
+            "url": c.get("url") or "",
+            "relevance_pct": pct,
+            "kind": "related",
+        })
+    return rows
 
 
 # -- Step 0: Query classifier -------------------------------------------------
@@ -198,24 +240,34 @@ def fetch_doc_text(tid: int, form_input: str) -> str:
         return ""
 
 
+def _fetch_doc_for_context(doc: dict, form_input: str) -> tuple:
+    """Single-doc fetch for parallel build_context."""
+    tid   = doc.get("tid")
+    title = doc.get("title", "Unknown")
+    src   = doc.get("docsource", "")
+    url   = "https://indiankanoon.org/doc/" + str(tid) + "/"
+    text  = fetch_doc_text(tid, form_input)
+    return tid, title, src, url, text
+
+
 def build_context(docs: list, form_input: str) -> tuple:
-    """Fetch text for each doc; return context string + citations metadata."""
+    """Fetch text for each doc in parallel; return context string + citations metadata."""
+    if not docs:
+        return "", []
+
+    max_workers = min(10, len(docs))
     context_parts = []
     citations     = []
 
-    for doc in docs:
-        tid   = doc.get("tid")
-        title = doc.get("title", "Unknown")
-        src   = doc.get("docsource", "")
-        url   = "https://indiankanoon.org/doc/" + str(tid) + "/"
-
-        text = fetch_doc_text(tid, form_input)
-        if not text:
-            continue
-
-        context_parts.append("### " + title + " [" + src + "]\n" + text)
-        citations.append({"title": title, "source": src, "url": url, "tid": tid})
-        log.info("CITATION | " + repr(title) + "  " + url)
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = [ex.submit(_fetch_doc_for_context, d, form_input) for d in docs]
+        for fut in futures:
+            tid, title, src, url, text = fut.result()
+            if not text:
+                continue
+            context_parts.append("### " + title + " [" + src + "]\n" + text)
+            citations.append({"title": title, "source": src, "url": url, "tid": tid})
+            log.info("CITATION | " + repr(title) + "  " + url)
 
     return "\n\n".join(context_parts), citations
 
@@ -399,11 +451,13 @@ def fetch_top_cases(user_question: str) -> tuple:
 # -- Orchestrator -------------------------------------------------------------
 def rag_query(user_question: str, history: list = None) -> dict:
     """
-    Full pipeline. Returns dict: {answer: str, suggestions: list[str]}.
+    Full pipeline. Returns dict with answer body, disclaimer, citations[], suggestions, more_cases_url.
     history: list of {role, content} dicts from the frontend session.
     """
     run_id = datetime.now().strftime("%H%M%S")
     log_section("RUN " + run_id + " | " + user_question)
+
+    empty_extras = {"citations": [], "more_cases_url": None, "disclaimer": None}
 
     # 0. Classify - skip IK entirely for non-legal messages
     query_type = classify_query(user_question, history)
@@ -414,12 +468,17 @@ def rag_query(user_question: str, history: list = None) -> dict:
             "answer": ("I am VaadAI, an Indian legal information assistant. "
                        "I can only help with questions about Indian law, court procedures, and legal rights.\n\n"
                        "Feel free to ask me any Indian legal question!"),
-            "suggestions": []
+            "suggestions": [],
+            **empty_extras,
         }
 
     if query_type == "CONVERSATIONAL":
         log.info("CONVERSATIONAL - skipping IK search")
-        return {"answer": handle_conversational(user_question, history), "suggestions": []}
+        return {
+            "answer": handle_conversational(user_question, history),
+            "suggestions": [],
+            **empty_extras,
+        }
 
     # 1. Plan search
     search_plan = plan_search(user_question)
@@ -431,33 +490,56 @@ def rag_query(user_question: str, history: list = None) -> dict:
     if not docs:
         log.warning("No documents returned from IK search.")
         return {
-            "answer": ("I was not able to find relevant legal information for your question right now. "
-                       "Please try rephrasing, or consult a local lawyer directly.\n\n"
-                       "Warning: This is legal information, not legal advice. Please consult a lawyer for your situation."),
-            "suggestions": []
+            "answer": (
+                "I was not able to find relevant legal information for your question right now. "
+                "Please try rephrasing, or consult a local lawyer directly."
+            ),
+            "suggestions": [],
+            "citations": [],
+            "more_cases_url": None,
+            "disclaimer": DEFAULT_DISCLAIMER,
         }
 
-    # 3. Build context
-    context, citations = build_context(docs, form_input)
+    # 3. Build context (parallel doc fetch)
+    context, rag_citations = build_context(docs, form_input)
     if not context.strip():
         context = "No usable context could be retrieved."
-    log.info("CONTEXT BUILT | docs_used=" + str(len(citations)) + "  total_chars=" + str(len(context)))
+    log.info("CONTEXT BUILT | docs_used=" + str(len(rag_citations)) + "  total_chars=" + str(len(context)))
 
-    # 4. Synthesise answer (plain text), then follow-ups from Q + A + context (separate call)
-    answer = synthesise_answer(user_question, context, history=history)
-    suggestions = generate_follow_up_questions(user_question, answer, context, history=history)
+    # 4. Synthesise answer (plain text)
+    raw_answer = synthesise_answer(user_question, context, history=history)
+    answer_body, disclaimer = split_answer_and_disclaimer(raw_answer)
 
-    # 5. Fetch top 2 relevant cases
-    relevant_cases, ik_search_url = fetch_top_cases(user_question)
-    if relevant_cases:
-        cases_block = "\n\nRecent related cases:"
-        for c in relevant_cases:
-            cases_block += "\n  - " + c["title"] + " -- " + c["source"] + "\n    " + c["url"]
-        cases_block += "\n\nMore cases: " + ik_search_url
-        answer += cases_block
+    # 5. Follow-up questions + related cases in parallel (same wall-clock as one of them)
+    suggestions = []
+    relevant_cases = []
+    ik_search_url   = None
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fut_sug = ex.submit(
+            generate_follow_up_questions, user_question, raw_answer, context, history
+        )
+        fut_cases = ex.submit(fetch_top_cases, user_question)
+        try:
+            suggestions = fut_sug.result()
+        except Exception as e:
+            log.warning("follow_up_questions failed: " + str(e))
+            suggestions = []
+        try:
+            relevant_cases, ik_search_url = fut_cases.result()
+        except Exception as e:
+            log.warning("fetch_top_cases failed: " + str(e))
+            relevant_cases, ik_search_url = [], None
+
+    citation_rows = build_verified_citation_rows(rag_citations, relevant_cases)
 
     log.info("RUN " + run_id + " COMPLETE")
-    return {"answer": answer, "suggestions": suggestions}
+    return {
+        "answer": answer_body,
+        "disclaimer": disclaimer,
+        "citations": citation_rows,
+        "more_cases_url": ik_search_url,
+        "suggestions": suggestions,
+    }
 
 
 # -- Test ---------------------------------------------------------------------
@@ -472,6 +554,10 @@ if __name__ == "__main__":
         print("\nQuestion " + str(i) + ": " + q + "\n")
         result = rag_query(q)
         print(result["answer"])
+        if result.get("disclaimer"):
+            print("\n[" + result["disclaimer"] + "]")
+        if result.get("citations"):
+            print("\nCitations:", len(result["citations"]))
         if result["suggestions"]:
             print("\nSuggested follow-ups:")
             for s in result["suggestions"]:
