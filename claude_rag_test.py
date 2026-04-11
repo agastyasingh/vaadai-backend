@@ -330,10 +330,54 @@ def fetch_top_cases(user_question: str) -> tuple:
     return cases, search_url
 
 
+# -- Step 5b: Generate follow-up recommendations -----------------------------
+RECOMMENDATIONS_PROMPT = """You are a legal assistant helping users explore Indian law step by step.
+
+You have just answered a legal question. Based on the answer and the conversation so far,
+suggest 3 short follow-up questions the user is most likely to ask next.
+
+Rules:
+- Each question must be directly answerable from Indian law (acts, sections, court procedures).
+- Questions must be SHORT - max 10 words each.
+- Questions must be SPECIFIC to the topic just discussed - no generic questions.
+- They should progress naturally: one clarification, one deeper dive, one practical next step.
+- Output ONLY a valid JSON array of 3 strings. No explanation, no markdown.
+
+Example output:
+["What is the time limit to file this petition?", "Can a Sessions Court also quash an FIR?", "What documents are needed to file the petition?"]"""
+
+
+def generate_recommendations(user_question: str, answer: str, context: str) -> list:
+    """Ask Claude to generate 3 relevant follow-up questions based on the answer."""
+    try:
+        resp = claude.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=150,
+            system=RECOMMENDATIONS_PROMPT,
+            messages=[{
+                "role": "user",
+                "content": (
+                    "QUESTION THAT WAS ASKED:\n" + user_question +
+                    "\n\nANSWER THAT WAS GIVEN:\n" + answer +
+                    "\n\nLEGAL CONTEXT USED:\n" + context[:1000]
+                )
+            }],
+        )
+        raw  = resp.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+        suggestions = json.loads(raw)
+        if isinstance(suggestions, list):
+            suggestions = [s for s in suggestions if isinstance(s, str) and len(s) > 5][:3]
+            log.info("RECOMMENDATIONS | " + str(suggestions))
+            return suggestions
+    except Exception as e:
+        log.warning("RECOMMENDATIONS failed: " + str(e))
+    return []
+
+
 # -- Orchestrator -------------------------------------------------------------
-def rag_query(user_question: str, history: list = None) -> str:
+def rag_query(user_question: str, history: list = None) -> dict:
     """
-    Full pipeline. Returns plain-language answer string.
+    Full pipeline. Returns dict: {answer: str, suggestions: list[str]}.
     history: list of {role, content} dicts from the frontend session.
     """
     run_id = datetime.now().strftime("%H%M%S")
@@ -344,13 +388,16 @@ def rag_query(user_question: str, history: list = None) -> str:
 
     if query_type == "OUTOFSCOPE":
         log.info("OUTOFSCOPE - skipping IK search")
-        return ("I am VaadAI, an Indian legal information assistant. "
-                "I can only help with questions about Indian law, court procedures, and legal rights.\n\n"
-                "Feel free to ask me any Indian legal question!")
+        return {
+            "answer": ("I am VaadAI, an Indian legal information assistant. "
+                       "I can only help with questions about Indian law, court procedures, and legal rights.\n\n"
+                       "Feel free to ask me any Indian legal question!"),
+            "suggestions": []
+        }
 
     if query_type == "CONVERSATIONAL":
         log.info("CONVERSATIONAL - skipping IK search")
-        return handle_conversational(user_question, history)
+        return {"answer": handle_conversational(user_question, history), "suggestions": []}
 
     # 1. Plan search
     search_plan = plan_search(user_question)
@@ -361,9 +408,12 @@ def rag_query(user_question: str, history: list = None) -> str:
     docs = search_indian_kanoon(form_input, doctypes)
     if not docs:
         log.warning("No documents returned from IK search.")
-        return ("I was not able to find relevant legal information for your question right now. "
-                "Please try rephrasing, or consult a local lawyer directly.\n\n"
-                "Warning: This is legal information, not legal advice. Please consult a lawyer for your situation.")
+        return {
+            "answer": ("I was not able to find relevant legal information for your question right now. "
+                       "Please try rephrasing, or consult a local lawyer directly.\n\n"
+                       "Warning: This is legal information, not legal advice. Please consult a lawyer for your situation."),
+            "suggestions": []
+        }
 
     # 3. Build context
     context, citations = build_context(docs, form_input)
@@ -383,8 +433,11 @@ def rag_query(user_question: str, history: list = None) -> str:
         cases_block += "\n\nMore cases: " + ik_search_url
         answer += cases_block
 
+    # 6. Generate follow-up recommendations (runs in parallel with cases already done)
+    suggestions = generate_recommendations(user_question, answer, context)
+
     log.info("RUN " + run_id + " COMPLETE")
-    return answer
+    return {"answer": answer, "suggestions": suggestions}
 
 
 # -- Test ---------------------------------------------------------------------
@@ -397,6 +450,11 @@ if __name__ == "__main__":
     print("VaadAI | Technical logs -> vaad_ai.log\n" + "=" * 60)
     for i, q in enumerate(queries, 1):
         print("\nQuestion " + str(i) + ": " + q + "\n")
-        print(rag_query(q))
+        result = rag_query(q)
+        print(result["answer"])
+        if result["suggestions"]:
+            print("\nSuggested follow-ups:")
+            for s in result["suggestions"]:
+                print("  - " + s)
         print("\n" + "-" * 60)
     print("\nDone. Check vaad_ai.log for full technical details.")
