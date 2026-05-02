@@ -487,6 +487,20 @@ def rag_query(user_question: str, history: list = None) -> dict:
 
     # 2. Search IK for RAG context
     docs = search_indian_kanoon(form_input, doctypes)
+
+    # Retry 1: remove doctype filter
+    if not docs:
+        log.warning("No docs on first search — retrying without doctype filter...")
+        print(f"[RAG] Retry 1: '{form_input}' no doctype filter", flush=True)
+        docs = search_indian_kanoon(form_input, doctypes="")
+
+    # Retry 2: simplify to first 4 words
+    if not docs:
+        simplified = " ".join(form_input.split()[:4])
+        log.warning(f"No docs on second search — retrying simplified: '{simplified}'")
+        print(f"[RAG] Retry 2: simplified query '{simplified}'", flush=True)
+        docs = search_indian_kanoon(simplified, doctypes="")
+          
     if not docs:
         log.warning("No documents returned from IK search.")
         return {
