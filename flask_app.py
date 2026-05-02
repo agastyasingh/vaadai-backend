@@ -139,7 +139,14 @@ def verify_webhook():
 def receive_message():
     data = request.get_json()
     try:
-        message    = data["entry"][0]["changes"][0]["value"]["messages"][0]
+        value = data["entry"][0]["changes"][0]["value"]
+
+        # ── Ignore status updates (delivered, read, sent) ─────────────────────
+        if "messages" not in value:
+            print("[WA] Ignoring non-message event (status update etc.)", flush=True)
+            return jsonify({"status": "ok"}), 200
+
+        message    = value["messages"][0]
         user_phone = message["from"]
         msg_type   = message.get("type")
 
@@ -162,31 +169,32 @@ def receive_message():
 
         print(f"[WA] RAG answered. Citations: {len(citations)}, Suggestions: {len(suggestions)}", flush=True)
 
-        response_text = answer
+        # ── Build main answer message (plain text, no length limit) ───────────
+        main_text = answer
 
         if citations:
-            response_text += "\n\n📚 *References:*"
+            main_text += "\n\n📚 *References:*"
             for c in citations[:3]:
                 title = c.get("title") or c.get("name") or "Source"
                 url   = c.get("url") or c.get("link") or c.get("href") or ""
                 if url:
-                    response_text += f"\n• {title}\n  🔗 {url}"
+                    main_text += f"\n• {title}\n  🔗 {url}"
                 else:
-                    response_text += f"\n• {title}"
+                    main_text += f"\n• {title}"
 
-        response_text += "\n\n⚠️ _This is legal information, not legal advice. Please consult a lawyer._"
+        main_text += "\n\n⚠️ _This is legal information, not legal advice. Please consult a lawyer._"
 
+        # ── Always send full answer as plain text first ───────────────────────
+        r1 = send_whatsapp_message(user_phone, main_text)
+        print(f"[WA] Plain text response: {r1.status_code}", flush=True)
+
+        # ── Then send suggestions as a separate interactive message ───────────
         if suggestions:
-            print(f"[WA] Sending interactive message...", flush=True)
-            r = send_whatsapp_interactive(user_phone, response_text, suggestions[:10])
-        else:
-            print(f"[WA] Sending plain text message...", flush=True)
-            r = send_whatsapp_message(user_phone, response_text)
-
-        print(f"[WA] Meta API response: {r.status_code} {r.text}", flush=True)
+            follow_up_text = "💡 Based on your question, you may also want to ask:"
+            r2 = send_whatsapp_interactive(user_phone, follow_up_text, suggestions[:10])
+            print(f"[WA] Interactive message: {r2.status_code} {r2.text}", flush=True)
 
     except Exception as e:
-        # Catch ALL errors so we can see them in logs
         print(f"[WA ERROR] {type(e).__name__}: {e}", flush=True)
 
     return jsonify({"status": "ok"}), 200
