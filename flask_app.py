@@ -125,6 +125,12 @@ WA_TOKEN       = os.environ.get("WA_TOKEN")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
 
 
+# In-memory conversation history per user
+from collections import defaultdict
+conversation_history = defaultdict(list)
+MAX_MESSAGES = 8  # 8 user messages per session
+
+
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
     mode      = request.args.get("hub.mode")
@@ -141,9 +147,8 @@ def receive_message():
     try:
         value = data["entry"][0]["changes"][0]["value"]
 
-        # ── Ignore status updates (delivered, read, sent) ─────────────────────
         if "messages" not in value:
-            print("[WA] Ignoring non-message event (status update etc.)", flush=True)
+            print("[WA] Ignoring non-message event", flush=True)
             return jsonify({"status": "ok"}), 200
 
         message    = value["messages"][0]
@@ -155,7 +160,6 @@ def receive_message():
         if msg_type == "text":
             user_text = message["text"]["body"]
         elif msg_type == "interactive":
-            # ✅ Use description (full question) not title (cropped)
             reply = message["interactive"]["list_reply"]
             user_text = reply.get("description") or reply.get("title")
         else:
@@ -164,22 +168,46 @@ def receive_message():
 
         print(f"[WA] User asked: {user_text}", flush=True)
 
-        result      = rag_query(user_text)
 
-        # ✅ Handle answer being a list or string
-        answer_raw  = result.get("answer", "")
+        
+        # ── Check message limit ───────────────────────────────────────────────
+        user_history = conversation_history[user_phone]
+        user_message_count = sum(1 for m in user_history if m["role"] == "user")
+
+        if user_message_count >= MAX_MESSAGES:
+            # Clear history and notify user
+            conversation_history[user_phone] = []
+            limit_msg = (
+                "You have reached the limit of 8 follow-up questions. "
+                "To continue, upgrade your plan or ask a new question."
+            )
+            send_whatsapp_message(user_phone, limit_msg)
+            print(f"[WA] Message limit reached for {user_phone}, history cleared.", flush=True)
+            return jsonify({"status": "ok"}), 200
+
+        # ── Run RAG pipeline with history ─────────────────────────────────────
+        result = rag_query(user_text, history=user_history)
+
+        answer_raw = result.get("answer", "")
         if isinstance(answer_raw, list):
             answer = " ".join(str(a) for a in answer_raw)
         else:
             answer = str(answer_raw) if answer_raw else "Sorry, I couldn't find an answer."
-        
+
         citations   = result.get("citations", [])
         suggestions = result.get("suggestions", [])
-        
 
         print(f"[WA] RAG answered. Citations: {len(citations)}, Suggestions: {len(suggestions)}", flush=True)
 
-        # ── Build main answer message (plain text, no length limit) ───────────
+        # ── Update history ────────────────────────────────────────────────────
+        conversation_history[user_phone].append({"role": "user",      "content": user_text})
+        conversation_history[user_phone].append({"role": "assistant", "content": answer})
+
+        # Trim to last MAX_HISTORY_TURNS exchanges
+        if len(conversation_history[user_phone]) > MAX_HISTORY_TURNS * 2:
+            conversation_history[user_phone] = conversation_history[user_phone][-(MAX_HISTORY_TURNS * 2):]
+
+        # ── Build response text ───────────────────────────────────────────────
         main_text = answer
 
         if citations:
@@ -194,11 +222,10 @@ def receive_message():
 
         main_text += "\n\n⚠️ _This is legal information, not legal advice. Please consult a lawyer._"
 
-        # ── Always send full answer as plain text first ───────────────────────
+        # ── Send response ─────────────────────────────────────────────────────
         r1 = send_whatsapp_message(user_phone, main_text)
         print(f"[WA] Plain text response: {r1.status_code}", flush=True)
 
-        # ── Then send suggestions as a separate interactive message ───────────
         if suggestions:
             follow_up_text = "💡 Based on your question, you may also want to ask:"
             r2 = send_whatsapp_interactive(user_phone, follow_up_text, suggestions[:10])
