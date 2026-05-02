@@ -136,6 +136,22 @@ def verify_webhook():
         return challenge, 200
     return "Forbidden", 403
 
+# @app.route("/webhook", methods=["POST"])
+# def receive_message():
+#     data = request.get_json()
+#     try:
+#         message = data["entry"][0]["changes"][0]["value"]["messages"][0]
+#         user_phone = message["from"]
+#         user_text = message["text"]["body"]
+
+#         result = rag_query(user_text)           # ✅ your actual RAG function
+#         rag_response = result.get("answer", "Sorry, I couldn't find an answer.")
+
+#         send_whatsapp_message(user_phone, rag_response)
+#     except (KeyError, IndexError):
+#         pass
+#     return jsonify({"status": "ok"}), 200
+
 @app.route("/webhook", methods=["POST"])
 def receive_message():
     data = request.get_json()
@@ -144,10 +160,33 @@ def receive_message():
         user_phone = message["from"]
         user_text = message["text"]["body"]
 
-        result = rag_query(user_text)           # ✅ your actual RAG function
-        rag_response = result.get("answer", "Sorry, I couldn't find an answer.")
+        result = rag_query(user_text)
+        
+        # Build plain text response
+        answer = result.get("answer", "Sorry, I couldn't find an answer.")
+        citations = result.get("citations", [])
+        suggestions = result.get("suggestions", [])
 
-        send_whatsapp_message(user_phone, rag_response)
+        response_text = answer
+
+        # Append citations in plain text
+        if citations:
+            response_text += "\n\n📚 *References:*"
+            for c in citations[:3]:  # limit to 3
+                title = c.get("title") or c.get("name") or "Source"
+                response_text += f"\n• {title}"
+
+        # Append follow-up suggestions
+        if suggestions:
+            response_text += "\n\n💡 *You can also ask:*"
+            for s in suggestions[:3]:  # limit to 3
+                response_text += f"\n• {s}"
+
+        # Disclaimer
+        response_text += "\n\n⚠️ _This is legal information, not legal advice. Please consult a lawyer._"
+
+        send_whatsapp_message(user_phone, response_text)
+
     except (KeyError, IndexError):
         pass
     return jsonify({"status": "ok"}), 200
