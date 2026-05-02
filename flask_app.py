@@ -1,5 +1,6 @@
 import sys
 import os
+import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -115,6 +116,56 @@ def recommendations():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+
+
+
+# Adding whatsapp routes
+
+VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "vaadaiVerificationToken2001")
+WA_TOKEN = os.environ.get("WA_TOKEN")
+PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
+
+@app.route("/webhook", methods=["GET"])
+def verify_webhook():
+    mode = request.args.get("hub.mode")
+    token = request.args.get("hub.verify_token")
+    challenge = request.args.get("hub.challenge")
+    if mode == "subscribe" and token == VERIFY_TOKEN:
+        return challenge, 200
+    return "Forbidden", 403
+
+@app.route("/webhook", methods=["POST"])
+def receive_message():
+    data = request.get_json()
+    try:
+        message = data["entry"][0]["changes"][0]["value"]["messages"][0]
+        user_phone = message["from"]
+        user_text = message["text"]["body"]
+
+        result = rag_query(user_text)           # ✅ your actual RAG function
+        rag_response = result.get("answer", "Sorry, I couldn't find an answer.")
+
+        send_whatsapp_message(user_phone, rag_response)
+    except (KeyError, IndexError):
+        pass
+    return jsonify({"status": "ok"}), 200
+
+def send_whatsapp_message(to, text):
+    url = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WA_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "text",
+        "text": {"body": text}
+    }
+    requests.post(url, headers=headers, json=payload)
+
 
 if __name__ == "__main__":
     app.run(debug=False)
