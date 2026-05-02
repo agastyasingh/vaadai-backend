@@ -155,7 +155,9 @@ def receive_message():
         if msg_type == "text":
             user_text = message["text"]["body"]
         elif msg_type == "interactive":
-            user_text = message["interactive"]["list_reply"]["title"]
+            # ✅ Use description (full question) not title (cropped)
+            reply = message["interactive"]["list_reply"]
+            user_text = reply.get("description") or reply.get("title")
         else:
             print(f"[WA] Ignoring message type: {msg_type}", flush=True)
             return jsonify({"status": "ok"}), 200
@@ -163,9 +165,17 @@ def receive_message():
         print(f"[WA] User asked: {user_text}", flush=True)
 
         result      = rag_query(user_text)
-        answer      = result.get("answer", "Sorry, I couldn't find an answer.")
+
+        # ✅ Handle answer being a list or string
+        answer_raw  = result.get("answer", "")
+        if isinstance(answer_raw, list):
+            answer = " ".join(str(a) for a in answer_raw)
+        else:
+            answer = str(answer_raw) if answer_raw else "Sorry, I couldn't find an answer."
+        
         citations   = result.get("citations", [])
         suggestions = result.get("suggestions", [])
+        
 
         print(f"[WA] RAG answered. Citations: {len(citations)}, Suggestions: {len(suggestions)}", flush=True)
 
@@ -225,17 +235,16 @@ def send_whatsapp_interactive(to, body_text, suggestions):
     }
 
     def truncate_title(text, limit=24):
-        """Truncate at word boundary, add ellipsis if needed."""
         if len(text) <= limit:
             return text
         truncated = text[:limit].rsplit(" ", 1)[0]
         return truncated.rstrip(".,?") + "…"
-
+    
     rows = [
         {
             "id": f"suggestion_{i}",
-            "title": truncate_title(s),  # ← clean word-boundary truncation
-            "description": s             # ← always show full question here
+            "title": truncate_title(s),  # WhatsApp requires this, keep it short
+            "description": s             # ✅ Full question always stored here
         }
         for i, s in enumerate(suggestions)
     ]
