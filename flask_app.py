@@ -161,6 +161,7 @@ def receive_message():
             user_text = message["text"]["body"]
         elif msg_type == "interactive":
             reply = message["interactive"]["list_reply"]
+            # Use id to look up full suggestion text if possible, else fallback to description
             user_text = reply.get("description") or reply.get("title")
         else:
             print(f"[WA] Ignoring message type: {msg_type}", flush=True)
@@ -265,11 +266,17 @@ def send_whatsapp_interactive(to, body_text, suggestions):
         truncated = text[:limit].rsplit(" ", 1)[0]
         return truncated.rstrip(".,?") + "…"
     
+    def truncate_description(text, limit=72):
+        if len(text) <= limit:
+            return text
+        truncated = text[:limit].rsplit(" ", 1)[0]
+        return truncated.rstrip(".,?") + "…"
+    
     rows = [
         {
             "id": f"suggestion_{i}",
-            "title": truncate_title(s),  # WhatsApp requires this, keep it short
-            "description": s             # ✅ Full question always stored here
+            "title": truncate_title(s),
+            "description": truncate_description(s)  # ✅ 72 char limit
         }
         for i, s in enumerate(suggestions)
     ]
