@@ -7,9 +7,28 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from claude_rag_test import rag_query, generate_follow_up_questions
+import fcntl
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 
 app = Flask(__name__)
 CORS(app)
+
+
+# ── File-based lock (works across Gunicorn workers) ───────────────────────────
+def is_processing(user_phone):
+    lock_file = f"/tmp/wa_lock_{user_phone}"
+    try:
+        f = open(lock_file, 'w')
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return False, f   # not locked — we acquired it
+    except IOError:
+        return True, None  # already locked by another worker
+
+def release_lock(f):
+    if f:
+        fcntl.flock(f, fcntl.LOCK_UN)
+        f.close()
 
 @app.route("/", methods=["GET"])
 def index():
@@ -145,6 +164,7 @@ def verify_webhook():
 @app.route("/webhook", methods=["POST"])
 def receive_message():
     data = request.get_json()
+    lock_file = None
     try:
         value = data["entry"][0]["changes"][0]["value"]
 
@@ -169,8 +189,9 @@ def receive_message():
             print(f"[WA] Ignoring message type: {msg_type}", flush=True)
             return jsonify({"status": "ok"}), 200
 
-        # ── Prevent concurrent processing for same user ───────────────────────
-        if user_phone in processing_users:
+        # ── Prevent concurrent processing across all Gunicorn workers ─────────
+        locked, lock_file = is_processing(user_phone)
+        if locked:
             print(f"[WA] Already processing for {user_phone}, ignoring duplicate.", flush=True)
             send_whatsapp_message(user_phone, "⏳ Please wait, I'm still working on your previous question...")
             return jsonify({"status": "ok"}), 200
@@ -182,6 +203,8 @@ def receive_message():
         if user_message_count >= MAX_MESSAGES:
             conversation_history[user_phone] = []
             suggestion_store[user_phone] = {}
+            release_lock(lock_file)
+            lock_file = None
             send_whatsapp_message(
                 user_phone,
                 "You have reached the limit of 8 follow-up questions. "
@@ -189,9 +212,6 @@ def receive_message():
             )
             print(f"[WA] Message limit reached for {user_phone}, history cleared.", flush=True)
             return jsonify({"status": "ok"}), 200
-
-        # ── Lock this user while processing ───────────────────────────────────
-        processing_users.add(user_phone)
 
         try:
             print(f"[WA] User asked: {user_text}", flush=True)
@@ -240,12 +260,13 @@ def receive_message():
                 print(f"[WA] Interactive message: {r2.status_code}", flush=True)
 
         finally:
-            # ── Always unlock the user, even if RAG crashes ───────────────────
-            processing_users.discard(user_phone)
+            # ── Always release file lock, even if RAG crashes ─────────────────
+            release_lock(lock_file)
+            lock_file = None
 
     except Exception as e:
         print(f"[WA ERROR] {type(e).__name__}: {e}", flush=True)
-        processing_users.discard(user_phone)
+        release_lock(lock_file)
 
     return jsonify({"status": "ok"}), 200
 
