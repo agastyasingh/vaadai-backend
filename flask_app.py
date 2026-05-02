@@ -223,14 +223,23 @@ def send_whatsapp_interactive(to, body_text, suggestions):
         "Authorization": f"Bearer {WA_TOKEN}",
         "Content-Type": "application/json"
     }
+
+    def truncate_title(text, limit=24):
+        """Truncate at word boundary, add ellipsis if needed."""
+        if len(text) <= limit:
+            return text
+        truncated = text[:limit].rsplit(" ", 1)[0]
+        return truncated.rstrip(".,?") + "…"
+
     rows = [
         {
             "id": f"suggestion_{i}",
-            "title": s[:24],
-            "description": s if len(s) > 24 else ""
+            "title": truncate_title(s),  # ← clean word-boundary truncation
+            "description": s             # ← always show full question here
         }
         for i, s in enumerate(suggestions)
     ]
+
     payload = {
         "messaging_product": "whatsapp",
         "to": to,
@@ -244,8 +253,7 @@ def send_whatsapp_interactive(to, body_text, suggestions):
             }
         }
     }
-    return requests.post(url, headers=headers, json=payload)  # ← return added
-
+    return requests.post(url, headers=headers, json=payload)
 
 
 
