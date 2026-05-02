@@ -203,10 +203,8 @@ def receive_message():
         conversation_history[user_phone].append({"role": "user",      "content": user_text})
         conversation_history[user_phone].append({"role": "assistant", "content": answer})
 
-        # Trim to last MAX_HISTORY_TURNS exchanges
-        if len(conversation_history[user_phone]) > MAX_HISTORY_TURNS * 2:
-            conversation_history[user_phone] = conversation_history[user_phone][-(MAX_HISTORY_TURNS * 2):]
 
+        
         # ── Build response text ───────────────────────────────────────────────
         main_text = answer
 
