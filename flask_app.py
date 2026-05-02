@@ -125,10 +125,11 @@ WA_TOKEN       = os.environ.get("WA_TOKEN")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
 
 
-# In-memory conversation history per user
 from collections import defaultdict
 conversation_history = defaultdict(list)
-MAX_MESSAGES = 8  # 8 user messages per session
+suggestion_store = defaultdict(dict)
+processing_users = set()  # ← tracks who is currently being processed
+MAX_MESSAGES = 8
 
 
 @app.route("/webhook", methods=["GET"])
@@ -160,78 +161,91 @@ def receive_message():
         if msg_type == "text":
             user_text = message["text"]["body"]
         elif msg_type == "interactive":
-            reply = message["interactive"]["list_reply"]
-            # Use id to look up full suggestion text if possible, else fallback to description
-            user_text = reply.get("description") or reply.get("title")
+            reply     = message["interactive"]["list_reply"]
+            reply_id  = reply.get("id", "")
+            user_text = suggestion_store[user_phone].get(reply_id) or reply.get("description") or reply.get("title")
+            print(f"[WA] Tapped suggestion id={reply_id} -> {user_text}", flush=True)
         else:
             print(f"[WA] Ignoring message type: {msg_type}", flush=True)
             return jsonify({"status": "ok"}), 200
 
-        print(f"[WA] User asked: {user_text}", flush=True)
+        # ── Prevent concurrent processing for same user ───────────────────────
+        if user_phone in processing_users:
+            print(f"[WA] Already processing for {user_phone}, ignoring duplicate.", flush=True)
+            send_whatsapp_message(user_phone, "⏳ Please wait, I'm still working on your previous question...")
+            return jsonify({"status": "ok"}), 200
 
-
-        
-        # ── Check message limit ───────────────────────────────────────────────
+        # ── Check message limit BEFORE processing ─────────────────────────────
         user_history = conversation_history[user_phone]
         user_message_count = sum(1 for m in user_history if m["role"] == "user")
 
         if user_message_count >= MAX_MESSAGES:
-            # Clear history and notify user
             conversation_history[user_phone] = []
-            limit_msg = (
+            suggestion_store[user_phone] = {}
+            send_whatsapp_message(
+                user_phone,
                 "You have reached the limit of 8 follow-up questions. "
                 "To continue, upgrade your plan or ask a new question."
             )
-            send_whatsapp_message(user_phone, limit_msg)
             print(f"[WA] Message limit reached for {user_phone}, history cleared.", flush=True)
             return jsonify({"status": "ok"}), 200
 
-        # ── Run RAG pipeline with history ─────────────────────────────────────
-        result = rag_query(user_text, history=user_history)
+        # ── Lock this user while processing ───────────────────────────────────
+        processing_users.add(user_phone)
 
-        answer_raw = result.get("answer", "")
-        if isinstance(answer_raw, list):
-            answer = " ".join(str(a) for a in answer_raw)
-        else:
-            answer = str(answer_raw) if answer_raw else "Sorry, I couldn't find an answer."
+        try:
+            print(f"[WA] User asked: {user_text}", flush=True)
 
-        citations   = result.get("citations", [])
-        suggestions = result.get("suggestions", [])
+            result      = rag_query(user_text, history=user_history)
+            answer_raw  = result.get("answer", "")
+            if isinstance(answer_raw, list):
+                answer = " ".join(str(a) for a in answer_raw)
+            else:
+                answer = str(answer_raw) if answer_raw else "Sorry, I couldn't find an answer."
 
-        print(f"[WA] RAG answered. Citations: {len(citations)}, Suggestions: {len(suggestions)}", flush=True)
+            citations   = result.get("citations", [])
+            suggestions = result.get("suggestions", [])
 
-        # ── Update history ────────────────────────────────────────────────────
-        conversation_history[user_phone].append({"role": "user",      "content": user_text})
-        conversation_history[user_phone].append({"role": "assistant", "content": answer})
+            print(f"[WA] RAG answered. Citations: {len(citations)}, Suggestions: {len(suggestions)}", flush=True)
 
+            # ── Update history ────────────────────────────────────────────────
+            conversation_history[user_phone].append({"role": "user",      "content": user_text})
+            conversation_history[user_phone].append({"role": "assistant", "content": answer})
 
-        
-        # ── Build response text ───────────────────────────────────────────────
-        main_text = answer
+            # ── Build and send main response ──────────────────────────────────
+            main_text = answer
 
-        if citations:
-            main_text += "\n\n📚 *References:*"
-            for c in citations[:3]:
-                title = c.get("title") or c.get("name") or "Source"
-                url   = c.get("url") or c.get("link") or c.get("href") or ""
-                if url:
-                    main_text += f"\n• {title}\n  🔗 {url}"
-                else:
-                    main_text += f"\n• {title}"
+            if citations:
+                main_text += "\n\n📚 *References:*"
+                for c in citations[:3]:
+                    title = c.get("title") or c.get("name") or "Source"
+                    url   = c.get("url") or c.get("link") or c.get("href") or ""
+                    if url:
+                        main_text += f"\n• {title}\n  🔗 {url}"
+                    else:
+                        main_text += f"\n• {title}"
 
-        main_text += "\n\n⚠️ _This is legal information, not legal advice. Please consult a lawyer._"
+            main_text += "\n\n⚠️ _This is legal information, not legal advice. Please consult a lawyer._"
 
-        # ── Send response ─────────────────────────────────────────────────────
-        r1 = send_whatsapp_message(user_phone, main_text)
-        print(f"[WA] Plain text response: {r1.status_code}", flush=True)
+            r1 = send_whatsapp_message(user_phone, main_text)
+            print(f"[WA] Plain text response: {r1.status_code}", flush=True)
 
-        if suggestions:
-            follow_up_text = "💡 Based on your question, you may also want to ask:"
-            r2 = send_whatsapp_interactive(user_phone, follow_up_text, suggestions[:10])
-            print(f"[WA] Interactive message: {r2.status_code} {r2.text}", flush=True)
+            # ── Send interactive suggestions ──────────────────────────────────
+            if suggestions:
+                suggestion_store[user_phone] = {
+                    f"suggestion_{i}": s for i, s in enumerate(suggestions[:10])
+                }
+                follow_up_text = "💡 Based on your question, you may also want to ask:"
+                r2 = send_whatsapp_interactive(user_phone, follow_up_text, suggestions[:10])
+                print(f"[WA] Interactive message: {r2.status_code}", flush=True)
+
+        finally:
+            # ── Always unlock the user, even if RAG crashes ───────────────────
+            processing_users.discard(user_phone)
 
     except Exception as e:
         print(f"[WA ERROR] {type(e).__name__}: {e}", flush=True)
+        processing_users.discard(user_phone)
 
     return jsonify({"status": "ok"}), 200
 
