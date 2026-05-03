@@ -505,8 +505,8 @@ def rag_query(user_question: str, history: list = None) -> dict:
         log.warning("No documents returned from IK search.")
         return {
             "answer": (
-                "I was not able to find relevant legal information for your question right now. "
-                "Please try rephrasing, or consult a local lawyer directly."
+                "Indian Kanoon doesn't have any information regarding this question right now. "
+                "Please try rephrasing your query, or consult a local lawyer directly."
             ),
             "suggestions": [],
             "citations": [],
