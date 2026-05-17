@@ -54,7 +54,16 @@ CREATE TABLE IF NOT EXISTS message_queue (
 );
 
 CREATE INDEX IF NOT EXISTS idx_queue_user ON message_queue(user_phone, id);
+
+CREATE TABLE IF NOT EXISTS processed_messages (
+    id            TEXT PRIMARY KEY,
+    processed_at  REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_processed_at ON processed_messages(processed_at);
 """
+
+PROCESSED_TTL_SECONDS = 10 * 60  # prune after 10 min — WA retries don't span longer
 
 
 def _connect() -> sqlite3.Connection:
@@ -393,6 +402,36 @@ def get_session_snapshot(user_phone: str) -> Optional[dict]:
     with _connect() as conn:
         row = _fetch(conn, user_phone)
     return _row_to_dict(row) if row else None
+
+
+def try_mark_processed(message_id: str) -> bool:
+    """
+    Atomically claim a WhatsApp message id.
+
+    Returns True if this is the first time we've seen the id (caller should
+    process the message), False if we've processed it already (caller should
+    drop it as a duplicate webhook redelivery).
+
+    WA Cloud API delivery is at-least-once; retries — especially after a
+    slow deploy — can land the same message multiple times. Without this
+    check, the same "hi" gets answered three times.
+    """
+    if not message_id:
+        # No id present (shouldn't happen for real WA messages). Don't dedupe;
+        # let it through.
+        return True
+    now = time.time()
+    cutoff = now - PROCESSED_TTL_SECONDS
+    with _connect() as conn:
+        conn.execute("DELETE FROM processed_messages WHERE processed_at < ?", (cutoff,))
+        try:
+            conn.execute(
+                "INSERT INTO processed_messages (id, processed_at) VALUES (?, ?)",
+                (message_id, now),
+            )
+            return True
+        except sqlite3.IntegrityError:
+            return False
 
 
 # Initialize the schema at import time so workers don't race on first request.

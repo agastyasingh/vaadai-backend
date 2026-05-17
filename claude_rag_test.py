@@ -19,6 +19,8 @@ from urllib.parse import quote_plus
 from dotenv import load_dotenv
 import anthropic
 
+from sanitation import is_answer_relevant, fallback_answer_from_claude_knowledge
+
 load_dotenv()
 
 # -- Logger -------------------------------------------------------------------
@@ -501,27 +503,36 @@ def rag_query(user_question: str, history: list = None) -> dict:
         print(f"[RAG] Retry 2: simplified query '{simplified}'", flush=True)
         docs = search_indian_kanoon(simplified, doctypes="")
           
+    fallback_used   = False
+    rag_citations   = []
+    context         = ""
+
     if not docs:
-        log.warning("No documents returned from IK search.")
-        return {
-            "answer": (
-                "Indian Kanoon doesn't have any information regarding this question right now. "
-                "Please try rephrasing your query, or consult a local lawyer directly."
-            ),
-            "suggestions": [],
-            "citations": [],
-            "more_cases_url": None,
-            "disclaimer": DEFAULT_DISCLAIMER,
-        }
+        # No IK context at all — go straight to Claude general-knowledge.
+        log.warning("No IK docs — falling back to Claude general knowledge.")
+        raw_answer    = fallback_answer_from_claude_knowledge(user_question, history)
+        fallback_used = True
+    else:
+        # 3. Build context (parallel doc fetch)
+        context, rag_citations = build_context(docs, form_input)
+        if not context.strip():
+            context = "No usable context could be retrieved."
+        log.info("CONTEXT BUILT | docs_used=" + str(len(rag_citations)) + "  total_chars=" + str(len(context)))
 
-    # 3. Build context (parallel doc fetch)
-    context, rag_citations = build_context(docs, form_input)
-    if not context.strip():
-        context = "No usable context could be retrieved."
-    log.info("CONTEXT BUILT | docs_used=" + str(len(rag_citations)) + "  total_chars=" + str(len(context)))
+        # 4. Synthesise answer (plain text)
+        raw_answer = synthesise_answer(user_question, context, history=history)
 
-    # 4. Synthesise answer (plain text)
-    raw_answer = synthesise_answer(user_question, context, history=history)
+        # 4b. Sanity-check: did synthesis actually answer the question?
+        # If not, swap in a Claude general-knowledge answer instead of letting
+        # the user leave empty-handed.
+        check_body, _ = split_answer_and_disclaimer(raw_answer)
+        if not is_answer_relevant(user_question, check_body):
+            log.warning("Synthesis judged irrelevant — swapping to general-knowledge fallback.")
+            raw_answer    = fallback_answer_from_claude_knowledge(user_question, history)
+            fallback_used = True
+            rag_citations = []
+            context       = ""  # follow-ups should be grounded in nothing if we abandoned IK
+
     answer_body, disclaimer = split_answer_and_disclaimer(raw_answer)
 
     # 5. Follow-up questions + related cases in parallel (same wall-clock as one of them)
@@ -546,13 +557,14 @@ def rag_query(user_question: str, history: list = None) -> dict:
 
     citation_rows = build_verified_citation_rows(rag_citations, relevant_cases)
 
-    log.info("RUN " + run_id + " COMPLETE")
+    log.info("RUN " + run_id + " COMPLETE | source=" + ("claude_knowledge" if fallback_used else "indian_kanoon"))
     return {
         "answer": answer_body,
         "disclaimer": disclaimer,
         "citations": citation_rows,
         "more_cases_url": ik_search_url,
         "suggestions": suggestions,
+        "source": "claude_knowledge" if fallback_used else "indian_kanoon",
     }
 
 

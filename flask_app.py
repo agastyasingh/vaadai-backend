@@ -203,8 +203,15 @@ def receive_message():
         message    = value["messages"][0]
         user_phone = message["from"]
         msg_type   = message.get("type")
+        message_id = message.get("id", "")
 
-        print(f"[WA] Received message type: {msg_type} from {user_phone}", flush=True)
+        # WhatsApp delivers at-least-once: the same id can arrive on multiple
+        # webhook calls. Drop redeliveries before they hit the queue.
+        if not ss.try_mark_processed(message_id):
+            print(f"[WA] Duplicate delivery id={message_id}, ignoring", flush=True)
+            return jsonify({"status": "ok"}), 200
+
+        print(f"[WA] Received message type: {msg_type} from {user_phone} id={message_id}", flush=True)
 
         if msg_type == "text":
             user_text    = message["text"]["body"]
